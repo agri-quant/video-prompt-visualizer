@@ -1,20 +1,23 @@
+import os
+import requests
 import streamlit as st
 from google import genai
 from google.genai import types
 from pydantic import BaseModel
 import replicate
-import os
-import requests
 from moviepy import VideoFileClip, concatenate_videoclips
 
 # Page Setup
 st.set_page_config(page_title="AI Movie Trailer Generator", page_icon="🎬", layout="wide")
 st.title("🎬 Multi-Shot AI Video Pipeline")
-st.write("Automatically breaks multi-scene prompts into individual clips, renders them via AI, and stitches them into a final trailer.")
 
-# API Keys
+# 1. Retrieve Keys safely from Streamlit Secrets or Sidebar
 gemini_key = st.secrets.get("GEMINI_API_KEY", "") or st.sidebar.text_input("Gemini API Key", type="password")
 replicate_token = st.secrets.get("REPLICATE_API_TOKEN", "") or st.sidebar.text_input("Replicate API Token", type="password")
+
+# 2. Force Replicate to read the token directly
+if replicate_token:
+    os.environ["REPLICATE_API_TOKEN"] = replicate_token.strip()
 
 master_prompt = st.text_area(
     "Master Trailer Script / Outline:",
