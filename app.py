@@ -1,9 +1,12 @@
 import streamlit as st
 from google import genai
+from google.genai import types
+from pydantic import BaseModel
 import replicate
 import os
 import requests
 from moviepy import VideoFileClip, concatenate_videoclips
+
 # Page Setup
 st.set_page_config(page_title="AI Movie Trailer Generator", page_icon="🎬", layout="wide")
 st.title("🎬 Multi-Shot AI Video Pipeline")
@@ -19,6 +22,10 @@ master_prompt = st.text_area(
     height=120
 )
 
+# Schema definition for Gemini Structured Output
+class TrailerBreakdown(BaseModel):
+    shots: list[str]
+
 if st.button("Generate & Stitch Full Trailer", type="primary"):
     if not gemini_key or not replicate_token:
         st.error("Please provide both Gemini and Replicate API Keys.")
@@ -26,25 +33,29 @@ if st.button("Generate & Stitch Full Trailer", type="primary"):
         os.environ["REPLICATE_API_TOKEN"] = replicate_token
         client = genai.Client(api_key=gemini_key)
         
-        # Step 1: Break master prompt into 5-second shot prompts
+        # Step 1: Break master prompt into 5-second shot prompts using JSON Schema
         with st.spinner("Deconstructing script into individual 5-second shot prompts..."):
             breakdown_instruction = """
-            Take the user's master trailer description and output exactly 6 distinct, short video generation prompts (one for each 5-second scene).
-            Format the output strictly as a JSON list of strings, like this:
-            ["Shot 1 prompt...", "Shot 2 prompt...", "Shot 3 prompt...", "Shot 4 prompt...", "Shot 5 prompt...", "Shot 6 prompt..."]
+            Take the user's master trailer description and convert it into 6 distinct, short video generation prompts (one for each 5-second scene).
+            Each shot must be detailed, cinematic, and focused on a single visual action.
             """
             
-            response = client.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=f"{breakdown_instruction}\n\nMaster Description: {master_prompt}"
-            )
-            
-            # Simple list parsing
-            import json
             try:
-                shot_prompts = json.loads(response.text.strip())
-            except:
-                st.error("Failed to parse shot breakdown. Try clicking generate again.")
+                response = client.models.generate_content(
+                    model='gemini-2.5-flash',
+                    contents=f"{breakdown_instruction}\n\nMaster Description: {master_prompt}",
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_schema=TrailerBreakdown
+                    )
+                )
+                
+                # Automatically validated and parsed JSON output
+                parsed_data = TrailerBreakdown.model_validate_json(response.text)
+                shot_prompts = parsed_data.shots
+                
+            except Exception as e:
+                st.error(f"Failed to break down prompt: {str(e)}")
                 st.stop()
 
         st.subheader("Generated Shot List")
@@ -57,35 +68,42 @@ if st.button("Generate & Stitch Full Trailer", type="primary"):
         
         for idx, shot in enumerate(shot_prompts):
             with st.spinner(f"Rendering Shot {idx+1} of {len(shot_prompts)} via Video API..."):
-                output = replicate.run(
-                    "minimax/video-01",
-                    input={"prompt": shot}
-                )
-                
-                # Download MP4 file
-                video_url = str(output)
-                res = requests.get(video_url)
-                file_path = f"clip_{idx+1}.mp4"
-                with open(file_path, "wb") as f:
-                    f.write(res.content)
-                clip_files.append(file_path)
+                try:
+                    output = replicate.run(
+                        "minimax/video-01",
+                        input={"prompt": shot}
+                    )
+                    
+                    # Download MP4 file
+                    video_url = str(output)
+                    res = requests.get(video_url)
+                    file_path = f"clip_{idx+1}.mp4"
+                    with open(file_path, "wb") as f:
+                        f.write(res.content)
+                    clip_files.append(file_path)
+                except Exception as clip_err:
+                    st.error(f"Error rendering Shot {idx+1}: {str(clip_err)}")
+                    st.stop()
                 
             progress_bar.progress((idx + 1) / len(shot_prompts))
 
         # Step 3: Stitch clips using MoviePy
         with st.spinner("Stitching shot clips into final combined trailer..."):
-            loaded_clips = [VideoFileClip(c) for c in clip_files]
-            final_clip = concatenate_videoclips(loaded_clips)
-            final_output_path = "final_abuja_trailer.mp4"
-            final_clip.write_videofile(final_output_path, codec="libx264")
+            try:
+                loaded_clips = [VideoFileClip(c) for c in clip_files]
+                final_clip = concatenate_videoclips(loaded_clips)
+                final_output_path = "final_abuja_trailer.mp4"
+                final_clip.write_videofile(final_output_path, codec="libx264")
 
-        st.success("Trailer Complete!")
-        st.video(final_output_path)
-        
-        with open(final_output_path, "rb") as f:
-            st.download_button(
-                label="🎥 Download 60-Second Stitched Trailer (.mp4)",
-                data=f,
-                file_name="Gidan_Gudu_Trailer.mp4",
-                mime="video/mp4"
-            )
+                st.success("Trailer Complete!")
+                st.video(final_output_path)
+                
+                with open(final_output_path, "rb") as f:
+                    st.download_button(
+                        label="🎥 Download 60-Second Stitched Trailer (.mp4)",
+                        data=f,
+                        file_name="Gidan_Gudu_Trailer.mp4",
+                        mime="video/mp4"
+                    )
+            except Exception as stitch_err:
+                st.error(f"Error stitching video files: {str(stitch_err)}")
