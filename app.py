@@ -1,109 +1,101 @@
-import os
-import requests
 import streamlit as st
 from google import genai
 from google.genai import types
 from pydantic import BaseModel
-import replicate
-from moviepy import VideoFileClip, concatenate_videoclips
+import urllib.parse
 
-# Page Setup
-st.set_page_config(page_title="AI Movie Trailer Generator", page_icon="🎬", layout="wide")
-st.title("🎬 Multi-Shot AI Video Pipeline")
-st.write("Automatically breaks multi-scene prompts into individual clips, renders them via AI, and stitches them into a final trailer.")
+# 1. PAGE SETUP
+st.set_page_config(
+    page_title="Gidan Gudu - AI Storyboard Engine",
+    page_icon="🎨",
+    layout="wide"
+)
 
-# API Keys Setup
-gemini_key = st.secrets.get("GEMINI_API_KEY", "") or st.sidebar.text_input("Gemini API Key", type="password")
-replicate_token = st.secrets.get("REPLICATE_API_TOKEN", "") or st.sidebar.text_input("Replicate API Token", type="password")
+st.title("🎬 Gidan Gudu - Shot Storyboard Engine")
+st.write("Converts master scripts into cinematic multi-shot breakdowns and visualizes keyframes using strictly **Google Gemini**.")
 
+# 2. API KEY SETUP (Only ONE key needed now)
+gemini_key = st.secrets.get("GEMINI_API_KEY", "") or st.sidebar.text_input("Google AI Studio API Key", type="password")
+
+# Master prompt for the Abuja trailer
 master_prompt = st.text_area(
-    "Master Trailer Script / Outline:",
+    "Master Script / Scene Description:",
     value="A 60-second trailer set in Abuja: Dawn highway race on Airport Road; Wuse II showroom key swap; CBD neon workshop Pagani engine discovery; Garki market Lamborghini scene; Midnight Idu drift and Guzape hill pursuit; Sunset vintage Mustang drive at Zuma Rock.",
     height=120
 )
 
+# 3. SCHEMA DEFINITION for Gemini Structured Output
 class TrailerBreakdown(BaseModel):
     shots: list[str]
 
-if st.button("Generate & Stitch Full Trailer", type="primary"):
-    if not gemini_key or not replicate_token:
-        st.error("Please provide both Gemini and Replicate API Keys.")
+# 4. GENERATION PIPELINE
+if st.button("Generate Shot List & Keyframes", type="primary"):
+    if not gemini_key:
+        st.error("Please provide your Google AI Studio API Key in the sidebar or secrets.")
     else:
-        # Direct Token Assignment
-        clean_replicate_token = replicate_token.strip().replace('"', '').replace("'", "")
-        os.environ["REPLICATE_API_TOKEN"] = clean_replicate_token
+        # Initialize Gemini Client
+        client = genai.Client(api_key=gemini_key)
         
-        # Initialize Replicate Client explicitly with token
-        rep_client = replicate.Client(api_token=clean_replicate_token)
-        genai_client = genai.Client(api_key=gemini_key)
-        
-        # Step 1: Break master prompt into shot prompts
-        with st.spinner("Deconstructing script into individual shot prompts..."):
+        # Step A: Deconstruct script into modular shot prompts
+        with st.spinner("Breaking script into cinematic shot list..."):
             breakdown_instruction = """
-            Take the user's master trailer description and convert it into 6 distinct, short video generation prompts (one for each 5-second scene).
-            Each shot must be detailed, cinematic, and focused on a single visual action.
+            Take the user's master trailer description and convert it into exactly 6 distinct, highly cinematic keyframe visual prompts (one for each key shot).
+            Each shot must be detailed, photorealistic (8k film, cinematic lighting, ultra-wide), and focus on one major action/subject.
+            Include specific Abuja atmosphere (dawn, neon, industrial smoke, golden hour Zuma Rock silhouette).
             """
+            
             try:
-                response = genai_client.models.generate_content(
-                    model='gemini-2.5-flash',
+                response = client.models.generate_content(
+                    model='gemini-1.5-flash',
                     contents=f"{breakdown_instruction}\n\nMaster Description: {master_prompt}",
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json",
                         response_schema=TrailerBreakdown
                     )
                 )
+                
+                # automatically parsed by Pydantic schema
                 parsed_data = TrailerBreakdown.model_validate_json(response.text)
                 shot_prompts = parsed_data.shots
+                
             except Exception as e:
-                st.error(f"Failed to break down prompt: {str(e)}")
+                st.error(f"Error breaking down prompt: {str(e)}")
                 st.stop()
 
-        st.subheader("Generated Shot List")
-        for i, shot in enumerate(shot_prompts, 1):
-            st.text(f"Shot {i}: {shot}")
-
-        # Step 2: Render individual clips using explicitly authenticated client
-        clip_files = []
-        progress_bar = st.progress(0)
+        st.subheader("Generated Shot Breakdown & Keyframe Visuals")
         
-        for idx, shot in enumerate(shot_prompts):
-            with st.spinner(f"Rendering Shot {idx+1} of {len(shot_prompts)} via Video API..."):
-                try:
-                    # Run model using authenticated rep_client instance
-                    output = rep_client.run(
-                        "minimax/video-01",
-                        input={"prompt": shot}
-                    )
+        # Step B: Visualize each shot as a high-quality image keyframe
+        for idx, shot in enumerate(shot_prompts, 1):
+            st.markdown(f"### Shot {idx} / 6")
+            
+            # Create two columns: one for text, one for image
+            col1, col2 = st.columns([1, 2])
+            
+            with col1:
+                st.info(f"**Visual Prompt for Keyframe:**\n\n{shot}")
+            
+            with col2:
+                with st.spinner(f"Generating Keyframe Visual {idx}..."):
+                    # We use Pollinations AI to serve free, key-free visualizations.
+                    # It works instantly by embedding a simple URL.
+                    # Format: https://image.pollinations.ai/prompt/{prompt}?width={w}&height={h}&seed={seed}&nologo=true
                     
-                    video_url = str(output)
-                    res = requests.get(video_url)
-                    file_path = f"clip_{idx+1}.mp4"
-                    with open(file_path, "wb") as f:
-                        f.write(res.content)
-                    clip_files.append(file_path)
-                except Exception as clip_err:
-                    st.error(f"Error rendering Shot {idx+1}: {str(clip_err)}")
-                    st.stop()
-                
-            progress_bar.progress((idx + 1) / len(shot_prompts))
-
-        # Step 3: Stitch clips using MoviePy
-        with st.spinner("Stitching shot clips into final combined trailer..."):
-            try:
-                loaded_clips = [VideoFileClip(c) for c in clip_files]
-                final_clip = concatenate_videoclips(loaded_clips)
-                final_output_path = "final_abuja_trailer.mp4"
-                final_clip.write_videofile(final_output_path, codec="libx264")
-
-                st.success("Trailer Complete!")
-                st.video(final_output_path)
-                
-                with open(final_output_path, "rb") as f:
-                    st.download_button(
-                        label="🎥 Download 60-Second Stitched Trailer (.mp4)",
-                        data=f,
-                        file_name="Gidan_Gudu_Trailer.mp4",
-                        mime="video/mp4"
+                    base_url = "https://image.pollinations.ai/prompt/"
+                    style_tags = "8k, ultra-photorealistic, cinematic film, highly detailed, "
+                    
+                    # Encode the prompt for the URL
+                    encoded_prompt = urllib.parse.quote(f"{style_tags}{shot}")
+                    
+                    # Generate the final URL with specific settings
+                    final_image_url = f"{base_url}{encoded_prompt}?width=1280&height=720&seed={idx}&nologo=true&private=true&enhance=true"
+                    
+                    # Display the image instantly
+                    st.image(
+                        final_image_url, 
+                        caption=f"Visual Keyframe Shot {idx} - Cinematic Preview", 
+                        use_container_width=True
                     )
-            except Exception as stitch_err:
-                st.error(f"Error stitching video files: {str(stitch_err)}")
+            
+            st.divider()
+
+        st.success("Storyboard Complete! You have six high-quality cinematic visual concept cards.")
