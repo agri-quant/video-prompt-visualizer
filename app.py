@@ -10,14 +10,11 @@ from moviepy import VideoFileClip, concatenate_videoclips
 # Page Setup
 st.set_page_config(page_title="AI Movie Trailer Generator", page_icon="🎬", layout="wide")
 st.title("🎬 Multi-Shot AI Video Pipeline")
+st.write("Automatically breaks multi-scene prompts into individual clips, renders them via AI, and stitches them into a final trailer.")
 
-# 1. Retrieve Keys safely from Streamlit Secrets or Sidebar
+# API Keys Setup
 gemini_key = st.secrets.get("GEMINI_API_KEY", "") or st.sidebar.text_input("Gemini API Key", type="password")
 replicate_token = st.secrets.get("REPLICATE_API_TOKEN", "") or st.sidebar.text_input("Replicate API Token", type="password")
-
-# 2. Force Replicate to read the token directly
-if replicate_token:
-    os.environ["REPLICATE_API_TOKEN"] = replicate_token.strip()
 
 master_prompt = st.text_area(
     "Master Trailer Script / Outline:",
@@ -25,7 +22,6 @@ master_prompt = st.text_area(
     height=120
 )
 
-# Schema definition for Gemini Structured Output
 class TrailerBreakdown(BaseModel):
     shots: list[str]
 
@@ -33,18 +29,22 @@ if st.button("Generate & Stitch Full Trailer", type="primary"):
     if not gemini_key or not replicate_token:
         st.error("Please provide both Gemini and Replicate API Keys.")
     else:
-        os.environ["REPLICATE_API_TOKEN"] = replicate_token
-        client = genai.Client(api_key=gemini_key)
+        # Direct Token Assignment
+        clean_replicate_token = replicate_token.strip().replace('"', '').replace("'", "")
+        os.environ["REPLICATE_API_TOKEN"] = clean_replicate_token
         
-        # Step 1: Break master prompt into 5-second shot prompts using JSON Schema
-        with st.spinner("Deconstructing script into individual 5-second shot prompts..."):
+        # Initialize Replicate Client explicitly with token
+        rep_client = replicate.Client(api_token=clean_replicate_token)
+        genai_client = genai.Client(api_key=gemini_key)
+        
+        # Step 1: Break master prompt into shot prompts
+        with st.spinner("Deconstructing script into individual shot prompts..."):
             breakdown_instruction = """
             Take the user's master trailer description and convert it into 6 distinct, short video generation prompts (one for each 5-second scene).
             Each shot must be detailed, cinematic, and focused on a single visual action.
             """
-            
             try:
-                response = client.models.generate_content(
+                response = genai_client.models.generate_content(
                     model='gemini-2.5-flash',
                     contents=f"{breakdown_instruction}\n\nMaster Description: {master_prompt}",
                     config=types.GenerateContentConfig(
@@ -52,11 +52,8 @@ if st.button("Generate & Stitch Full Trailer", type="primary"):
                         response_schema=TrailerBreakdown
                     )
                 )
-                
-                # Automatically validated and parsed JSON output
                 parsed_data = TrailerBreakdown.model_validate_json(response.text)
                 shot_prompts = parsed_data.shots
-                
             except Exception as e:
                 st.error(f"Failed to break down prompt: {str(e)}")
                 st.stop()
@@ -65,19 +62,19 @@ if st.button("Generate & Stitch Full Trailer", type="primary"):
         for i, shot in enumerate(shot_prompts, 1):
             st.text(f"Shot {i}: {shot}")
 
-        # Step 2: Render individual clips and download locally
+        # Step 2: Render individual clips using explicitly authenticated client
         clip_files = []
         progress_bar = st.progress(0)
         
         for idx, shot in enumerate(shot_prompts):
             with st.spinner(f"Rendering Shot {idx+1} of {len(shot_prompts)} via Video API..."):
                 try:
-                    output = replicate.run(
+                    # Run model using authenticated rep_client instance
+                    output = rep_client.run(
                         "minimax/video-01",
                         input={"prompt": shot}
                     )
                     
-                    # Download MP4 file
                     video_url = str(output)
                     res = requests.get(video_url)
                     file_path = f"clip_{idx+1}.mp4"
