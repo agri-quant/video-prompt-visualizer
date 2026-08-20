@@ -3,8 +3,7 @@ from google import genai
 import replicate
 import os
 import requests
-from moviepy.editor import VideoFileClip, concatenate_videoclips
-
+from moviepy import VideoFileClip, concatenate_videoclips
 # Page Setup
 st.set_page_config(page_title="AI Movie Trailer Generator", page_icon="🎬", layout="wide")
 st.title("🎬 Multi-Shot AI Video Pipeline")
